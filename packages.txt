@@ -1,3 +1,4 @@
 libgdal-dev
 gdal-bin
 libspatialindex-dev
+python3-rtree
