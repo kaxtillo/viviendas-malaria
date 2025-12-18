@@ -7,20 +7,20 @@ import pandas as pd
 from shapely.geometry import Polygon, shape
 from geopy.geocoders import Nominatim
 import io
-import plotly.express as px
 
 st.set_page_config(page_title="Analizador Urbano OSM", layout="wide")
 
 # --- FUNCIONES DE APOYO ---
 def calcular_area_precision(poly):
     from math import radians, cos
-    R = 6371000 # Radio Tierra
+    R = 6371000  # Radio Tierra en metros
     lat_ref = poly.centroid.y
     arg = radians(lat_ref)
+    # Cálculo preciso basado en latitud
     return poly.area * (radians(1)*R)**2 * cos(arg)
 
 def buscar_lugar(nombre):
-    geolocator = Nominatim(user_agent="my_osm_app_v2")
+    geolocator = Nominatim(user_agent="my_osm_app_v3")
     try:
         return geolocator.geocode(nombre)
     except:
@@ -29,9 +29,9 @@ def buscar_lugar(nombre):
 # --- INTERFAZ ---
 st.title("🏙️ Analizador de Vivienda y Población")
 
-with st.expander("🔍 Buscador de Ubicación", expanded=True):
+with st.expander("🔍 Buscador de Ubicación (Barrios, Veredas, Ciudades)", expanded=True):
     col_busq, col_btn = st.columns([4, 1])
-    lugar_input = col_busq.text_input("Escribe el lugar:", placeholder="Ej: Popayán, Cauca")
+    lugar_input = col_busq.text_input("Escribe el lugar:", placeholder="Ej: Centro Histórico, Popayán")
     if col_btn.button("Ir al lugar"):
         loc = buscar_lugar(lugar_input)
         if loc:
@@ -48,21 +48,25 @@ col1, col2 = st.columns([3, 2])
 with col1:
     st.subheader("1. Mapa de Selección")
     m = folium.Map(location=st.session_state.map_center, zoom_start=16)
-    draw = Draw(export=False, position='topleft', 
-                draw_options={'polyline': False, 'circle': False, 'marker': False, 'circlemarker': False})
+    draw = Draw(
+        export=False, 
+        position='topleft', 
+        draw_options={'polyline': False, 'circle': False, 'marker': False, 'circlemarker': False}
+    )
     draw.add_to(m)
-    output = st_folium(m, width="100%", height=600, key="mapa_v3")
+    output = st_folium(m, width="100%", height=600, key="mapa_final")
 
 with col2:
-    st.subheader("2. Análisis de Datos")
+    st.subheader("2. Resultados del Análisis")
     
     if output and output.get("last_active_drawing"):
-        with st.spinner("Procesando polígonos..."):
+        with st.spinner("Calculando datos..."):
             geom = output["last_active_drawing"]["geometry"]
             poly = shape(geom)
             coords = poly.exterior.coords
             poly_str = " ".join([f"{lat} {lon}" for lon, lat in coords])
             
+            # Consulta a Overpass
             query = f'[out:json];(way["building"](poly:"{poly_str}");relation["building"](poly:"{poly_str}"););out geom;'
             
             try:
@@ -76,54 +80,55 @@ with col2:
                         lons = [p['lon'] for p in el['geometry']]
                         b_poly = Polygon(zip(lons, lats))
                         
+                        area_b = calcular_area_precision(b_poly)
+                        pisos = el.get('tags', {}).get('building:levels', 1)
+                        
                         edificios.append({
-                            'Tipo': el.get('tags', {}).get('building', 'Otros'),
-                            'Pisos': el.get('tags', {}).get('building:levels', None),
-                            'Area_Base': calcular_area_precision(b_poly)
+                            'ID_OSM': el.get('id'),
+                            'Uso': el.get('tags', {}).get('building', 'residencial'),
+                            'Pisos': pisos,
+                            'Area_m2': round(area_b, 2)
                         })
 
                 if edificios:
                     df = pd.DataFrame(edificios)
                     
-                    # Ajustes de usuario
-                    p_est = st.slider("Pisos por defecto", 1, 15, 2)
-                    m2_per = st.number_input("M2 por persona", value=35)
+                    # Limpieza de datos interna (sin slider de usuario)
+                    df['Pisos'] = pd.to_numeric(df['Pisos'], errors='coerce').fillna(1).astype(int)
+                    df['Area_Total'] = df['Area_m2'] * df['Pisos']
                     
-                    # Limpieza
-                    df['Pisos'] = pd.to_numeric(df['Pisos'], errors='coerce').fillna(p_est).astype(int)
-                    df['Area_Habitable'] = df['Area_Base'] * df['Pisos']
+                    # Parámetro de densidad (único control manual necesario)
+                    m2_per = st.number_input("M2 por persona (Densidad)", value=35)
                     
-                    # Métricas
-                    total_pob = df['Area_Habitable'].sum() / m2_per
-                    st.metric("Población Estimada", f"{int(total_pob)} personas")
+                    # MÉTRICAS PRINCIPALES
+                    total_viviendas = len(df)
+                    total_pob = int(df['Area_Total'].sum() / m2_per)
                     
-                    # --- GRÁFICO DE PASTEL ---
-                    st.write("### Distribución por Altura (Pisos)")
-                    # Agrupar datos para el gráfico
-                    df_grafico = df['Pisos'].value_counts().reset_index()
-                    df_grafico.columns = ['Niveles', 'Cantidad']
-                    df_grafico['Niveles'] = df_grafico['Niveles'].apply(lambda x: f"{int(x)} Piso(s)")
+                    st.divider()
+                    st.metric("Total de Viviendas Detectadas", f"{total_viviendas}")
+                    st.metric("Población Estimada", f"{total_pob} hab.")
+                    st.divider()
 
-                    fig = px.pie(df_grafico, values='Cantidad', names='Niveles', 
-                                 hole=0.4, # Gráfico de dona para que se vea más moderno
-                                 color_discrete_sequence=px.colors.sequential.RdBu)
-                    
-                    fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=300)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.write("### Tabla de detalles")
+                    st.dataframe(df[['Uso', 'Pisos', 'Area_m2', 'Area_Total']].head(20))
 
-                    # --- EXPORTAR ---
-                    st.write("### Exportar")
+                    # --- BOTONES DE DESCARGA ---
+                    st.write("### Exportar Informe")
+                    c1, c2 = st.columns(2)
+                    
+                    # CSV
                     csv = df.to_csv(index=False).encode('utf-8')
-                    st.download_button("Descargar CSV", csv, "datos.csv", "text/csv")
+                    c1.download_button("Descargar CSV", csv, "analisis_vivienda.csv", "text/csv")
                     
+                    # EXCEL
                     output_xlsx = io.BytesIO()
                     with pd.ExcelWriter(output_xlsx, engine='xlsxwriter') as writer:
-                        df.to_excel(writer, index=False)
-                    st.download_button("Descargar Excel", output_xlsx.getvalue(), "datos.xlsx")
-                    
+                        df.to_excel(writer, index=False, sheet_name='Análisis')
+                    c2.download_button("Descargar Excel (XLSX)", output_xlsx.getvalue(), "analisis_vivienda.xlsx")
+
                 else:
-                    st.warning("No se encontraron edificios.")
+                    st.warning("No se encontraron viviendas en el área seleccionada.")
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error al conectar con OpenStreetMap: {e}")
     else:
-        st.info("Dibuja una zona en el mapa para ver el análisis.")
+        st.info("💡 Instrucciones: Busca un lugar arriba, luego usa la herramienta de dibujo (cuadrado o polígono) para marcar una zona en el mapa.")
