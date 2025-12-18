@@ -6,3 +6,4 @@ requests
 pandas
 geopy
 xlsxwriter
+plotly
