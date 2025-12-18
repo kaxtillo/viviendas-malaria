@@ -1,8 +1,6 @@
-pyproj
-shapely
-geopandas
-osmnx
+streamlit
 folium
 streamlit-folium
-streamlit
-matplotlib
+geopandas
+shapely
+requests
