@@ -4,3 +4,5 @@ streamlit-folium
 shapely
 requests
 pandas
+geopy
+xlsxwriter
