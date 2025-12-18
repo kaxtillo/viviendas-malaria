@@ -1,8 +1,6 @@
 streamlit
 folium
 streamlit-folium
-osmnx>=1.9.0
-geopandas>=0.14.0
-shapely>=2.0.0
-matplotlib
-Rtree
+geopandas
+shapely
+requests
