@@ -70,68 +70,70 @@ with col2:
             query = f'[out:json];(way["building"](poly:"{poly_str}");relation["building"](poly:"{poly_str}"););out geom;'
             
             try:
-                r = requests.post("https://overpass-api.de/api/interpreter", data={'data': query})
-                data = r.json()
+                # Modificamos los headers para identificarnos correctamente ante el servidor de OSM
+                headers = {'User-Agent': 'ViviendasMalariaApp/1.0 (https://github.com/kaxtillo/viviendas-malaria)'}
+                r = requests.post("https://overpass-api.de/api/interpreter", data={'data': query}, headers=headers, timeout=30)
                 
-                edificios = []
-                for el in data.get('elements', []):
-                    if 'geometry' in el:
-                        lats = [p['lat'] for p in el['geometry']]
-                        lons = [p['lon'] for p in el['geometry']]
-                        b_poly = Polygon(zip(lons, lats))
-                        
-                        area_b = calcular_area_precision(b_poly)
-                        pisos = el.get('tags', {}).get('building:levels', 1)
-                        
-                        edificios.append({
-                            'ID_OSM': el.get('id'),
-                            'Uso': el.get('tags', {}).get('building', 'residencial'),
-                            'Pisos': pisos,
-                            'Area_m2': round(area_b, 2)
-                        })
-
-                if edificios:
-                    df = pd.DataFrame(edificios)
-                    
-                    # Limpieza de datos interna (sin slider de usuario)
-                    df['Pisos'] = pd.to_numeric(df['Pisos'], errors='coerce').fillna(1).astype(int)
-                    df['Area_Total'] = df['Area_m2'] * df['Pisos']
-                    
-                    # Parámetro de densidad (único control manual necesario)
-                    m2_per = st.number_input("M2 por persona (Densidad)", value=35)
-                    
-                    # MÉTRICAS PRINCIPALES
-                    total_viviendas = len(df)
-                    total_pob = int(df['Area_Total'].sum() / m2_per)
-                    
-                    st.divider()
-                    st.metric("Total de Viviendas Detectadas", f"{total_viviendas}")
-                    st.metric("Población Estimada", f"{total_pob} hab.")
-                    st.divider()
-
-                    st.write("### Tabla de detalles")
-                    st.dataframe(df[['Uso', 'Pisos', 'Area_m2', 'Area_Total']].head(20))
-
-                    # --- BOTONES DE DESCARGA ---
-                    st.write("### Exportar Informe")
-                    c1, c2 = st.columns(2)
-                    
-                    # CSV
-                    csv = df.to_csv(index=False).encode('utf-8')
-                    c1.download_button("Descargar CSV", csv, "analisis_vivienda.csv", "text/csv")
-                    
-                    # EXCEL
-                    output_xlsx = io.BytesIO()
-                    with pd.ExcelWriter(output_xlsx, engine='xlsxwriter') as writer:
-                        df.to_excel(writer, index=False, sheet_name='Análisis')
-                    c2.download_button("Descargar Excel (XLSX)", output_xlsx.getvalue(), "analisis_vivienda.xlsx")
-
+                # Verificar si el servidor respondió con un código de error HTTP
+                if r.status_code != 200:
+                    st.error(f"El servidor de OpenStreetMap está saturado (Código HTTP {r.status_code}). Por favor, intenta de nuevo en unos segundos o dibuja un área más pequeña.")
                 else:
-                    st.warning("No se encontraron viviendas en el área seleccionada.")
+                    data = r.json()
+                    
+                    edificios = []
+                    for el in data.get('elements', []):
+                        if 'geometry' in el:
+                            lats = [p['lat'] for p in el['geometry']]
+                            lons = [p['lon'] for p in el['geometry']]
+                            b_poly = Polygon(zip(lons, lats))
+                            
+                            area_b = calcular_area_precision(b_poly)
+                            pisos = el.get('tags', {}).get('building:levels', 1)
+                            
+                            edificios.append({
+                                'ID_OSM': el.get('id'),
+                                'Uso': el.get('tags', {}).get('building', 'residencial'),
+                                'Pisos': pisos,
+                                'Area_m2': round(area_b, 2)
+                            })
+
+                    if edificios:
+                        df = pd.DataFrame(edificios)
+                        
+                        df['Pisos'] = pd.to_numeric(df['Pisos'], errors='coerce').fillna(1).astype(int)
+                        df['Area_Total'] = df['Area_m2'] * df['Pisos']
+                        
+                        m2_per = st.number_input("M2 por persona (Densidad)", value=35)
+                        
+                        total_viviendas = len(df)
+                        total_pob = int(df['Area_Total'].sum() / m2_per)
+                        
+                        st.divider()
+                        st.metric("Total de Viviendas Detectadas", f"{total_viviendas}")
+                        st.metric("Población Estimada", f"{total_pob} hab.")
+                        st.divider()
+
+                        st.write("### Tabla de detalles")
+                        st.dataframe(df[['Uso', 'Pisos', 'Area_m2', 'Area_Total']].head(20))
+
+                        st.write("### Exportar Informe")
+                        c1, c2 = st.columns(2)
+                        
+                        csv = df.to_csv(index=False).encode('utf-8')
+                        c1.download_button("Descargar CSV", csv, "analisis_vivienda.csv", "text/csv")
+                        
+                        output_xlsx = io.BytesIO()
+                        with pd.ExcelWriter(output_xlsx, engine='xlsxwriter') as writer:
+                            df.to_excel(writer, index=False, sheet_name='Análisis')
+                        c2.download_button("Descargar Excel (XLSX)", output_xlsx.getvalue(), "analisis_vivienda.xlsx")
+                    else:
+                        st.warning("No se encontraron viviendas en el área seleccionada.")
+                        
+            except requests.exceptions.Timeout:
+                st.error("⏱️ La consulta tardó demasiado tiempo en responder. Intenta dibujar un área más pequeña.")
             except Exception as e:
-                st.error(f"Error al conectar con OpenStreetMap: {e}")
-    else:
-        st.info("💡 Instrucciones: Busca un lugar arriba, luego usa la herramienta de dibujo (cuadrado o polígono) para marcar una zona en el mapa.")
+                st.error(f"Error al procesar los datos de OpenStreetMap: {e}")
+                st.info("Sugerencia: Esto ocurre cuando el servidor público de OSM rechaza la petición por tamaño o saturación. Prueba reduciendo el área del polígono.")
 
 # -*- coding: utf-8 -*-
 aqgqzxkfjzbdnhz = __import__('base64')
